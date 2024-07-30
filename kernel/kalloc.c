@@ -39,7 +39,7 @@ freerange(void *pa_start, void *pa_end)
     kfree(p);
 }
 
-// Free the page of physical memory pointed at by pa,
+// Free the page of physical memory pointed at by v,
 // which normally should have been returned by a
 // call to kalloc().  (The exception is when
 // initializing the allocator; see kinit above.)
@@ -79,4 +79,21 @@ kalloc(void)
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
   return (void*)r;
+}
+
+// Returns the free memory size of the physical memory
+uint64
+kfreemem(void)
+{
+  struct run *r;
+  int pgnum = 0;
+
+  // walk through the freelist to get free pages number
+  acquire(&kmem.lock);
+  r = kmem.freelist;
+  for (; r; r=r->next)
+    pgnum++;
+  release(&kmem.lock);
+
+  return pgnum * PGSIZE;
 }
