@@ -432,3 +432,41 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     return -1;
   }
 }
+
+// Recursively print the page table
+void
+vmprint(pagetable_t pagetable, int depth)
+{
+  if(depth == 0)
+    printf("page table %p\n", pagetable);
+  // there are 2^9 = 512 PTEs in a page table.
+  for(int i = 0;i < 512; i++){
+    pte_t pte = pagetable[i];
+    if(pte & PTE_V){
+      uint64 pa = PTE2PA(pte);
+      for(int j = 0; j <= depth; j++) // print prefix indent
+        printf(" ..");
+      printf("%d: pte %p pa %p\n", i, pte, pa);
+      if((pte & (PTE_R|PTE_W|PTE_X)) == 0) // if it is not leaf
+        vmprint((pagetable_t)pa, depth+1);
+    }
+  }
+}
+
+// walk PTEs to get access bit
+uint64
+walk_pgaccess(pagetable_t pagetable, uint64 base, int len)
+{
+  pte_t *pte;
+  uint64 mask = 0;
+  for(int i = 0; i < len; i++){
+    uint64 va = (uint64)base + i*(PGSIZE);
+    if((pte = walk(pagetable, va, 0)) == 0)
+      return -1;
+    if((*pte & PTE_A) != 0){
+      mask |= (1 << i);
+      *pte &= ~PTE_A;
+    }
+  }
+  return mask;
+}

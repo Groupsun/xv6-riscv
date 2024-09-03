@@ -44,12 +44,7 @@ OBJS_KCSAN += \
 	$K/kcsan.o
 endif
 
-ifeq ($(LAB),pgtbl)
-OBJS += \
-	$K/vmcopyin.o
-endif
-
-ifeq ($(LAB),$(filter $(LAB), pgtbl lock))
+ifeq ($(LAB),$(filter $(LAB), lock))
 OBJS += \
 	$K/stats.o\
 	$K/sprintf.o
@@ -146,7 +141,7 @@ tags: $(OBJS) _init
 
 ULIB = $U/ulib.o $U/usys.o $U/printf.o $U/umalloc.o
 
-ifeq ($(LAB),$(filter $(LAB), pgtbl lock))
+ifeq ($(LAB),$(filter $(LAB), lock))
 ULIB += $U/statistics.o
 endif
 
@@ -179,7 +174,6 @@ mkfs/mkfs: mkfs/mkfs.c $K/fs.h $K/param.h
 UPROGS=\
 	$U/_cat\
 	$U/_echo\
-	$U/_find\
 	$U/_forktest\
 	$U/_grep\
 	$U/_init\
@@ -189,20 +183,16 @@ UPROGS=\
 	$U/_mkdir\
 	$U/_rm\
 	$U/_sh\
-	$U/_sleep\
 	$U/_stressfs\
-	$U/_pingpong\
-	$U/_primes\
 	$U/_usertests\
 	$U/_grind\
-	$U/_xargs\
 	$U/_wc\
 	$U/_zombie\
 
 
 
 
-ifeq ($(LAB),$(filter $(LAB), pgtbl lock))
+ifeq ($(LAB),$(filter $(LAB), lock))
 UPROGS += \
 	$U/_stats
 endif
@@ -239,6 +229,11 @@ ph: notxv6/ph.c
 
 barrier: notxv6/barrier.c
 	gcc -o barrier -g -O2 $(XCFLAGS) notxv6/barrier.c -pthread
+endif
+
+ifeq ($(LAB),pgtbl)
+UPROGS += \
+	$U/_pgtbltest
 endif
 
 ifeq ($(LAB),lock)
