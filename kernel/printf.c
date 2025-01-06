@@ -109,7 +109,6 @@ printf(char *fmt, ...)
       break;
     }
   }
-  va_end(ap);
 
   if(locking)
     release(&pr.lock);
@@ -132,4 +131,19 @@ printfinit(void)
 {
   initlock(&pr.lock, "pr");
   pr.locking = 1;
+}
+
+void
+backtrace(void)
+{
+  printf("backtrace\n");
+
+  // obtain current fp and ra
+  uint64 fp = r_fp();
+  // if fp still in kernel space, recursive
+  while (PGROUNDDOWN(fp) < fp && fp < PGROUNDUP(fp))
+  {
+    printf("%p\n", *(uint64 *)(fp - 8)); // ra
+    fp = *(uint64 *)(fp - 16);           // fp
+  }
 }
