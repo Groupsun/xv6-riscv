@@ -14,6 +14,9 @@ void freerange(void *pa_start, void *pa_end);
 extern char end[]; // first address after kernel.
                    // defined by kernel.ld.
 
+// reference count for each physical page and its lock
+int refcount[PHYPAGES];
+struct spinlock refcount_lock;
 struct run {
   struct run *next;
 };
@@ -27,6 +30,7 @@ void
 kinit()
 {
   initlock(&kmem.lock, "kmem");
+  initlock(&refcount_lock, "refcount");
   freerange(end, (void*)PHYSTOP);
 }
 
@@ -39,7 +43,7 @@ freerange(void *pa_start, void *pa_end)
     kfree(p);
 }
 
-// Free the page of physical memory pointed at by pa,
+// Free the page of physical memory pointed at by v,
 // which normally should have been returned by a
 // call to kalloc().  (The exception is when
 // initializing the allocator; see kinit above.)
@@ -47,9 +51,19 @@ void
 kfree(void *pa)
 {
   struct run *r;
+  int refcount_val;
 
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
+
+  // if the page is still in use by other processes, do not free it
+  acquire(&refcount_lock);
+  refcount[REFIDX((uint64)pa)]--;  // decrement reference count
+  refcount_val = refcount[REFIDX((uint64)pa)];
+  release(&refcount_lock);
+
+  if (refcount_val > 0) // page is still in use
+    return;
 
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);
@@ -72,11 +86,16 @@ kalloc(void)
 
   acquire(&kmem.lock);
   r = kmem.freelist;
-  if(r)
+  if(r) {
     kmem.freelist = r->next;
+    acquire(&refcount_lock);
+    refcount[REFIDX((uint64)r)] = 1;
+    release(&refcount_lock);
+  }
   release(&kmem.lock);
 
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
   return (void*)r;
 }
+

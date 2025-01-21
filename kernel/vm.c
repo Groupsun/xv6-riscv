@@ -5,7 +5,7 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
-
+#include "proc.h"
 /*
  * the kernel's page table.
  */
@@ -14,6 +14,9 @@ pagetable_t kernel_pagetable;
 extern char etext[];  // kernel.ld sets this to end of kernel code.
 
 extern char trampoline[]; // trampoline.S
+
+extern int refcount[]; // kalloc.c defines refcount
+extern struct spinlock refcount_lock; // kalloc.c defines refcount_lock
 
 // Make a direct-map page table for the kernel.
 pagetable_t
@@ -43,7 +46,7 @@ kvmmake(void)
   // the highest virtual address in the kernel.
   kvmmap(kpgtbl, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
 
-  // allocate and map a kernel stack for each process.
+  // map kernel stacks
   proc_mapstacks(kpgtbl);
   
   return kpgtbl;
@@ -61,12 +64,7 @@ kvminit(void)
 void
 kvminithart()
 {
-  // wait for any previous writes to the page table memory to finish.
-  sfence_vma();
-
   w_satp(MAKE_SATP(kernel_pagetable));
-
-  // flush stale entries from the TLB.
   sfence_vma();
 }
 
@@ -208,12 +206,12 @@ uvmcreate()
 // for the very first process.
 // sz must be less than a page.
 void
-uvmfirst(pagetable_t pagetable, uchar *src, uint sz)
+uvminit(pagetable_t pagetable, uchar *src, uint sz)
 {
   char *mem;
 
   if(sz >= PGSIZE)
-    panic("uvmfirst: more than a page");
+    panic("inituvm: more than a page");
   mem = kalloc();
   memset(mem, 0, PGSIZE);
   mappages(pagetable, 0, PGSIZE, (uint64)mem, PTE_W|PTE_R|PTE_X|PTE_U);
@@ -223,7 +221,7 @@ uvmfirst(pagetable_t pagetable, uchar *src, uint sz)
 // Allocate PTEs and physical memory to grow process from oldsz to
 // newsz, which need not be page aligned.  Returns new size or 0 on error.
 uint64
-uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz, int xperm)
+uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
 {
   char *mem;
   uint64 a;
@@ -239,7 +237,7 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz, int xperm)
       return 0;
     }
     memset(mem, 0, PGSIZE);
-    if(mappages(pagetable, a, PGSIZE, (uint64)mem, PTE_R|PTE_U|xperm) != 0){
+    if(mappages(pagetable, a, PGSIZE, (uint64)mem, PTE_W|PTE_X|PTE_R|PTE_U) != 0){
       kfree(mem);
       uvmdealloc(pagetable, a, oldsz);
       return 0;
@@ -308,28 +306,42 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
+  //char *mem;
+  int writable;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
       panic("uvmcopy: pte should exist");
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
+    writable = 0;
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
+    // set COW bit and clear write bit if the page is writable
+    // otherwise, no need to set COW bit and clear write bit
+    if (flags & PTE_W) {
+      flags = (flags | PTE_COW) & ~PTE_W;
+      writable = 1;
+    }
+    //if((mem = kalloc()) == 0)
+    //  goto err;
+    //memmove(mem, (char*)pa, PGSIZE);
+    if(mappages(new, i, PGSIZE, pa, flags) != 0){
+      //kfree(mem);
       goto err;
     }
+    if (writable)
+      *pte = (*pte | PTE_COW) & ~PTE_W;
+
+    acquire(&refcount_lock);
+    refcount[REFIDX(pa)]++;
+    release(&refcount_lock);
   }
   return 0;
 
- err:
-  uvmunmap(new, 0, i / PGSIZE, 1);
-  return -1;
+  err:
+    uvmunmap(new, 0, i / PGSIZE, 1);
+    return -1;
 }
 
 // mark a PTE invalid for user access.
@@ -352,12 +364,28 @@ int
 copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
   uint64 n, va0, pa0;
+  pte_t *pte;
+  struct proc *p = myproc();
+  uint flags;
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
     pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
+    if (pa0 == 0)
       return -1;
+    pte = walk(pagetable, va0, 0);
+    if (*pte == 0)
+      p->killed = 1;
+    flags = PTE_FLAGS(*pte);
+
+    // check if the page is COW page
+    if (va0 < p->sz && (*pte & PTE_COW) && (*pte & PTE_V)) {
+      // allocate a new page
+      // reuse the cow_handler
+      if((pa0 = (uint64)cow_handler(pagetable, va0, pa0, flags)) == 0)
+        p->killed = 1;
+    }
+
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;
